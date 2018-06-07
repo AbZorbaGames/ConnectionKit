@@ -24,14 +24,9 @@
 
 import Foundation
 
-public protocol Image: VisualContent, CustomPlaygroundQuickLookable {
+public protocol Image: VisualContent, CustomPlaygroundDisplayConvertible {
     var image: UIImage { get }
     var size: Size { get }
-    func scaled(_ scale: Float) -> Image
-    
-    func configure(imageView: UIImageView)
-    func configure(button: UIButton)
-    func configureBackground(button: UIButton)
 }
 
 public extension Image {
@@ -39,17 +34,14 @@ public extension Image {
     public var size: Size {
         return Size(size: self.image.size)
     }
-    
-    public func scaled(_ scale: Float) -> Image {
-        return ScaledImage(original: self, scale: scale)
-    }
 }
 
 public extension Image {
     
-    public var customPlaygroundQuickLook: PlaygroundQuickLook {
-        return PlaygroundQuickLook.image(self.image)
+    public var playgroundDescription: Any {
+        return self.image
     }
+    
 }
 
 public extension Image {
@@ -70,7 +62,7 @@ public extension Image {
                         for: UIControlState.normal)
     }
     
-    func configureBackground(button: UIButton) {
+    public func configureBackground(button: UIButton) {
         button.setBackgroundImage(self.image,
                                   for: UIControlState.normal)
     }
