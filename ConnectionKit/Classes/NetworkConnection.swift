@@ -33,10 +33,9 @@ public final class NetworkConnection: Connection {
     final public var delegate: ConnectionDelegate?
     final public var errorDelegate: ConnectionErrorDelegate?
     
-    final private let connection: NWConnection
+    final private var connection: NWConnection!
     final public let host: Host
     final public let port: Port
-    final private let queue: DispatchQueue
     
     public init(host: Host,
                 port: Port,
@@ -46,39 +45,75 @@ public final class NetworkConnection: Connection {
         self.port = port
         self.delegate = delegate
         self.errorDelegate = errorDelegate
-        self.queue = DispatchQueue(label: "ConnectionKit.connection.queue",
-                                   qos: DispatchQoS.userInitiated,
-                                   autoreleaseFrequency: DispatchQueue.AutoreleaseFrequency.workItem)
+        self.bootstrap()
+    }
+    
+    deinit {
+        self.disconnect()
+    }
+    
+    final private func bootstrap() {
+        
         let tcpOptions = NWProtocolTCP.Options()
-        tcpOptions.connectionTimeout = 5
-        tcpOptions.enableKeepalive = true
+//        tcpOptions.connectionTimeout = 5
+//        tcpOptions.enableKeepalive = true
         let parameters = NWParameters(tls: nil, tcp: tcpOptions)
         parameters.expiredDNSBehavior = .allow
         parameters.serviceClass = .responsiveData
-        self.connection = NWConnection(host: NWEndpoint.Host.name(host, nil),
-                                       port: NWEndpoint.Port(rawValue: self.port)!,
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host.name(self.host, nil),
+                                           port: NWEndpoint.Port(rawValue: self.port)!)
+        self.connection = NWConnection(to: endpoint,
                                        using: parameters)
-        self.connection.stateUpdateHandler = { (state: NWConnection.State) in
+        self.connection.stateUpdateHandler = { [weak self] (state: NWConnection.State) in
+            guard let strelf = self else { return }
             switch state {
             case NWConnection.State.ready:
-                self.delegate?.didConnect(self)
+                strelf.delegate?.didConnect(strelf)
+                strelf.receive()
                 
             case NWConnection.State.failed(let error):
-                print("ConnectionKit.NetworkConnection failed with \(error)")
-                self.errorDelegate?.didFail(with: ConnectionError.connectionFailed)
+                print("ConnectionKit.NetworkConnection.stateUpdateHandler failed with \(error)")
+                strelf.errorDelegate?.didFail(with: ConnectionError.connectionFailed)
+                strelf.bootstrap()
                 
-            case NWConnection.State.waiting(let error):
-                print("ConnectionKit.NetworkConnection waiting due to \(error)")
-                self.delegate?.didDisconnect(self, reason: error)
+            case NWConnection.State.cancelled:
+                strelf.delegate?.didDisconnect(strelf, reason: ConnectionError.disconnection)
             default:
-                fatalError()
+                break
             }
         }
     }
     
+    final private func receive() {
+        self.connection.receive(minimumIncompleteLength: 1,
+                                maximumLength: Int(Int16.max),
+                                completion: { [weak self] (d: Data?, context: NWConnection.ContentContext?, isComplete: Bool, e: NWError?) in
+            guard let strelf = self else { return }
+            
+            if let error = e {
+                print("ConnectionKit.NetworkConnection.received failed with \(error)")
+                strelf.errorDelegate?.didFail(with: ConnectionError.receiveFailed)
+                return
+            }
+            
+            guard let data = d, let jsonString = String(data: data, encoding: String.Encoding.utf8) else {
+                print("ConnectionKit.NetworkConnection.received failed with data/json")
+                strelf.errorDelegate?.didFail(with: ConnectionError.receiveFailed)
+                return
+            }
+            let representable: Representable = jsonString.trimmingCharacters(in: CharacterSet.newlines)
+            strelf.delegate?.didReceive(representable)
+        })
+    }
+    
     
     final public func connect() throws {
-        self.connection.start(queue: self.queue)
+        print("ConnectionKit.NetworkConnection.connect")
+        if self.connection.state != NWConnection.State.setup {
+            self.connection.forceCancel()
+            self.bootstrap()
+        }
+        self.connection.start(queue: DispatchQueue.main)
     }
     
     final public func disconnect() {
@@ -90,16 +125,13 @@ public final class NetworkConnection: Connection {
     }
     
     final public func send(_ representable: Representable) {
-        
         var jsonBuilder: JSONRepresentationBuilder = JSONRepresentationBuilder()
         jsonBuilder = representable.represent(using: jsonBuilder)
         self.connection.send(content: jsonBuilder.jsonData,
                              completion: NWConnection.SendCompletion.contentProcessed({ (e: NWError?) in
                                 guard let error = e else { return }
-                                print("ConnectionKit.NetworkConnection failed with \(error)")
+                                print("ConnectionKit.NetworkConnection.send failed with \(error)")
         }))
     }
-    
-    
 }
 #endif
